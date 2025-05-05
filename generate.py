@@ -62,8 +62,12 @@ def main():
     x_sample = x_sample.astype(np.uint8)
 
     for bi in range(B):
-        output_fn = Path(flags.output)/ f'{bi}.png'
-        imsave(output_fn, np.concatenate([x_sample[bi,ni] for ni in range(N)], 1))
+        sample_dir = Path(flags.output) / f"{bi}"
+        sample_dir.mkdir(exist_ok=True, parents=True)
+        
+        for ni in range(N):
+            output_fn = sample_dir / f"{ni}.png"             
+            imsave(output_fn, x_sample[bi, ni])
 
 if __name__=="__main__":
     main()
