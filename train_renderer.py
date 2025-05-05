@@ -17,7 +17,7 @@ from tqdm import tqdm
 import mcubes
 
 from ldm.base_utils import read_pickle, output_points
-from renderer.renderer import NeuSRenderer, DEFAULT_SIDE_LENGTH
+from renderer.renderer import NeuSRenderer, NeRFRenderer, DEFAULT_SIDE_LENGTH
 from ldm.util import instantiate_from_config
 
 class ResumeCallBacks(Callback):
@@ -105,16 +105,43 @@ def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, co
     vertex_colors = color_func(vertices)
     return vertices, triangles, vertex_colors
 
-def extract_mesh(model, output, resolution=512):
-    if not isinstance(model.renderer, NeuSRenderer): return
-    bbox_min = -torch.ones(3)*DEFAULT_SIDE_LENGTH
-    bbox_max = torch.ones(3)*DEFAULT_SIDE_LENGTH
+def extract_mesh(model, output, resolution=512, nerf_sigma_thresh: float = 5.0):
+    ren = model.renderer
+
+    if isinstance(ren, NeuSRenderer):
+        query_fn  = lambda x: ren.sdf_network.sdf(x)
+        color_fn  = lambda x: ren.get_vertex_colors(x)
+        threshold = 0.0
+        bbox_min  = -torch.ones(3)*DEFAULT_SIDE_LENGTH
+        bbox_max  =  torch.ones(3)*DEFAULT_SIDE_LENGTH
+        outside_val = 1.0 
+
+    elif isinstance(ren, NeRFRenderer):
+        bound     = ren.field.bound
+        bbox_min  = torch.tensor([-bound, -bound, -bound])
+        bbox_max  = torch.tensor([+bound, +bound, +bound])
+             
+        def query_fn(x: torch.Tensor):
+            return ren.field.density(x)['sigma'].squeeze(-1) - nerf_sigma_thresh
+
+        def color_fn(x_np: np.ndarray):
+            pts   = torch.from_numpy(x_np).float().cuda()
+            geo   = ren.field.density(pts)['geo_feat']     
+            dirs  = torch.zeros_like(pts)                  
+            rgb   = ren.field.color(pts, dirs, geo_feat=geo)
+            return (rgb.clamp(0,1).cpu().numpy()*255).astype(np.uint8)
+
+        threshold = 0.0
+        outside_val = nerf_sigma_thresh
+
     with torch.no_grad():
-        vertices, triangles, vertex_colors = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
+        verts, tris, vcols = extract_geometry(
+            bbox_min, bbox_max, resolution, threshold,
+            query_fn, color_fn, outside_val=outside_val)
 
     # output geometry
-    mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=vertex_colors)
-    mesh.export(str(f'{output}/mesh.ply'))
+    mesh = trimesh.Trimesh(verts, tris, vertex_colors=vcols)
+    mesh.export(str(Path(output) / 'mesh.ply'))
 
 def main():
     parser = argparse.ArgumentParser()
